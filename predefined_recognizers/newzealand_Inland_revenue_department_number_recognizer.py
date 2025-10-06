@@ -1,92 +1,184 @@
 from typing import Optional, List
 from presidio_analyzer import Pattern, PatternRecognizer, RecognizerResult
-import logging
 import re
 
-logger = logging.getLogger("presidio-analyzer")
-
 class NewZealandInlandRevenueDepartmentNumberRecognizer(PatternRecognizer):
-    logger.info("Initializing Eight or Nine Digit NewZealandInlandRevenueDepartmentNumberRecognizer...")
 
-    # Define patterns for eight or nine digits with optional delimiters (spaces or hyphens)
+    # ---------------------------------------------------------------------
+    # Define patterns for NZ IRD Numbers
+    # ---------------------------------------------------------------------
     PATTERNS = [
         Pattern(
-            "Eight or Nine Digit Number - Medium Confidence",
-            r"^\d{2}\s\d{3}\s\d{3}$",  # Pattern for 8 or 9 digits with optional spaces/hyphens
-            0.7  # Initial confidence score for the pattern match
+            "NZ_IRD_With_Delimiters",
+            r"\b\d{2,3}[-\s]?\d{3}[-\s]?\d{3}\b",
+            0.75,
         ),
         Pattern(
-            "Eight or Nine Digit Number - Medium Confidence",
-            r"\b[0-1]?[0-9]{8}\b",  # Pattern for 8 or 9 digits with optional spaces/hyphens
-            1.0  # Initial confidence score for the pattern match
+            "NZ_IRD_8_Digit",
+            r"\b\d{8}\b",
+            0.6,
         ),
         Pattern(
-            "Eight or Nine Digit Number - Medium Confidence",
-            r"\b[0-1]?[0-9]{2}-[0-9]{3}-[0-9]{3}\b",  # Pattern for 8 or 9 digits with optional spaces/hyphens
-            1.0  # Initial confidence score for the pattern match
+            "NZ_IRD_9_Digit",
+            r"\b\d{9}\b",
+            0.6,
         ),
     ]
 
-    # Context keywords for the number
-    CONTEXT = ["ird no.", "ird no#", "nz ird", "new zealand ird", "ird number", "inland revenue number", "IRD number", "Inland Revenue Department number", "tax number", "New Zealand tax number", "New Zealand IRD", "IRD", "NZ IRD", "taxpayer identification", "Inland Revenue", "NZ tax ID", "taxpayer number"]
-
+    CONTEXT = [
+        "ird", "ird number", "ird no", "ird no.", "ird no#", "ird #",
+        "inland revenue", "inland revenue department",
+        "new zealand ird", "new zealand inland revenue",
+        "tax number", "tax file number", "nz tax", "nz tax number",
+        "taxpayer number", "ird account"
+    ]
 
     def __init__(
         self,
         patterns: Optional[List[Pattern]] = None,
         context: Optional[List[str]] = None,
-        supported_language: str = "en",  # Supports English (can be modified for other languages)
+        supported_language: str = "en",
         supported_entity: str = "NewZealand_Inland_Revenue_Department_Number",
     ):
-        patterns = patterns if patterns else self.PATTERNS
-        context = context if context else self.CONTEXT
         super().__init__(
             supported_entity=supported_entity,
-            patterns=patterns,
-            context=context,
+            patterns=patterns or self.PATTERNS,
+            context=context or self.CONTEXT,
             supported_language=supported_language,
         )
 
-    def analyze(
-        self, text: str, entities: List[str], nlp_artifacts=None
-    ) -> List[RecognizerResult]:
-        logger.info(f"Analyzing text for eight or nine digit number: {text}")
+    # ---------------------------------------------------------------------
+    # Analyze Text
+    # ---------------------------------------------------------------------
+    def analyze(self, text: str, entities: List[str], nlp_artifacts=None) -> List[RecognizerResult]:
+        print("\nAnalyzing text:", text)
         results = super().analyze(text, entities, nlp_artifacts)
+        final_results = []
+
+        has_context = self._has_context_keywords(text)
+        print(f"→ Context keywords found: {has_context}")
+
         for result in results:
-            number = text[result.start:result.end]
-            cleaned_number = re.sub(r"[-\s]", "", number)  # Remove delimiters for checksum validation
-            logger.debug(f"Detected Number: {number}, Cleaned Number: {cleaned_number}, Confidence: {result.score}")
-            if self._is_valid_checksum(cleaned_number):
-                logger.info(f"Checksum valid for number: {cleaned_number}")
-                result.score = 0.7  # Medium confidence if checksum passes
-                if any(keyword in text.lower() for keyword in self.CONTEXT):
-                    logger.info(f"Context keywords found for number: {number}, setting high confidence.")
-                    result.score = 1.0  # High confidence if context keywords are present
-            else:
-                logger.warning(f"Invalid checksum for number: {number}")
-                result.score = 0.0  # Invalid number
-        return results
+            original = text[result.start:result.end]
+            cleaned = re.sub(r"[-\s]", "", original)
+            print(f"\nFound possible IRD: '{original}' → cleaned: {cleaned}")
 
-    def _is_valid_checksum(self, number: str) -> bool:
+            valid_checksum = self._is_valid_ird_checksum(cleaned)
+            print(f"→ Checksum valid: {valid_checksum}")
+
+            new_score = self._calculate_score(has_context, valid_checksum, result.score)
+            print(f"→ Final score: {new_score} (context={has_context}, valid={valid_checksum})")
+
+            result.score = new_score
+            final_results.append(result)
+
+        return final_results
+
+    # ---------------------------------------------------------------------
+    # Check Context Keywords
+    # ---------------------------------------------------------------------
+    def _has_context_keywords(self, text: str) -> bool:
+        text_lower = text.lower()
+        for kw in self.CONTEXT:
+            if re.search(r"\b" + re.escape(kw) + r"\b", text_lower):
+                print(f"✓ Found context keyword: '{kw}'")
+                return True
+        return False
+
+    # ---------------------------------------------------------------------
+    # Scoring Logic
+    # ---------------------------------------------------------------------
+    def _calculate_score(self, has_context: bool, is_valid_checksum: bool, pattern_score: float) -> float:
         """
-        Validate the checksum for the given number.
-        Custom checksum logic can be defined as per requirements.
-        This example uses a Modulus 11 checksum algorithm.
+        Scoring rules:
+          - Context + valid checksum    → 1.0 (High)
+          - No context + valid checksum → 0.8 (Medium)
+          - Context + invalid checksum  → 0.3 (Low)
+          - No context + invalid        → 0.1 (Very Low)
         """
-        logger.debug(f"Validating checksum for number: {number}")
-        total_sum = 0
-        multiplier = len(number)  # Dynamically adjust the multiplier based on the length of the number (8 or 9)
-
-        for i in range(len(number)):
-            digit = int(number[i])
-            total_sum += digit * multiplier
-            multiplier -= 1
-
-        # Modulus 11 check
-        is_valid = total_sum % 11 == 0
-        if is_valid:
-            logger.info(f"Checksum for number {number} is valid.")
+        if has_context and is_valid_checksum:
+            return 1.0
+        elif not has_context and is_valid_checksum:
+            return 0.8
+        elif has_context and not is_valid_checksum:
+            return 0.3
         else:
-            logger.error(f"Checksum for number {number} is invalid.")
-        return is_valid
-        
+            return 0.1
+
+    # ---------------------------------------------------------------------
+    # NZ IRD Modulus 11 Checksum Validation
+    # ---------------------------------------------------------------------
+    def _is_valid_ird_checksum(self, number: str) -> bool:
+        """
+        Implements NZ Inland Revenue Department number Modulus-11 validation.
+        Reference: Microsoft Purview definition + IRD algorithm.
+        """
+
+        if len(number) not in (8, 9):
+            print(f"✗ Invalid length ({len(number)}) for number: {number}")
+            return False
+
+        # Pad 8-digit number
+        if len(number) == 8:
+            number = "0" + number
+            print(f"→ Padded to 9 digits: {number}")
+
+        try:
+            digits = [int(d) for d in number]
+        except ValueError:
+            print(f"✗ Non-numeric characters found in: {number}")
+            return False
+
+        def check(weights):
+            total = sum(d * w for d, w in zip(digits[:8], weights))
+            remainder = total % 11
+            check_digit = digits[8]
+            expected = (11 - remainder) if remainder not in (0, 1) else None
+            print(f"  Weights: {weights} | Total={total} | Remainder={remainder} | Check digit={check_digit} | Expected={expected}")
+            if remainder == 0:
+                return check_digit == 0
+            elif remainder == 1:
+                return False
+            else:
+                return check_digit == expected
+
+        primary = [3, 2, 7, 6, 5, 4, 3, 2]
+        if check(primary):
+            print("✓ Passed primary weighting scheme")
+            return True
+
+        secondary = [7, 4, 3, 2, 5, 2, 7, 6]
+        if check(secondary):
+            print("✓ Passed secondary weighting scheme")
+            return True
+
+        print("✗ Failed both weighting schemes")
+        return False
+
+    # ---------------------------------------------------------------------
+    # Test Cases
+    # ---------------------------------------------------------------------
+    def test_specific_cases(self):
+        print("\n========== Running Test Cases ==========")
+        cases = [
+            "Inland Revenue Department number: 49-098-576",
+            "Inland Revenue Department number: 123-456-782",
+            "Inland Revenue Department number: 123-456-789",
+            "IRD no: 49-091-8762",   # Valid checksum example
+            "Customer tax number: 490918762"  # Valid without delimiters
+        ]
+
+        for text in cases:
+            print("\n----------------------------------------")
+            results = self.analyze(text, [])
+            if not results:
+                print("No pattern matched.")
+            for r in results:
+                print(f"Detected: {text[r.start:r.end]} → Score: {r.score}")
+
+        # Check raw numbers
+        print("\n--- Raw Checksum Validation ---")
+        for num in ["49098576", "123456782", "123456789", "490918762", "490918761"]:
+            print(f"\nValidating {num}:")
+            valid = self._is_valid_ird_checksum(num)
+            print(f"Result: {'Valid ✅' if valid else 'Invalid ❌'}")
