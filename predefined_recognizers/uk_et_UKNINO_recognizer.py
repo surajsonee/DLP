@@ -3,15 +3,20 @@ import re
 from typing import List, Optional
 
 class UKNINORecognizer(PatternRecognizer):
-    # Define patterns for UK National Insurance Numbers
+    # Define patterns for UK National Insurance Numbers with and without spaces
     PATTERNS = [
         Pattern(
             "UK NINO", 
-            r"\b(?!BG|GB|KN|NK|NT|TN|ZZ)([A-CEGHJ-PR-TW-Z]{2})(\d{6})([A-D]?)\b", 
+            r"\b(?!BG|GB|KN|NK|NT|TN|ZZ)([A-CEGHJ-PR-TW-Z]{2})\s*(\d{2})\s*(\d{2})\s*(\d{2})\s*([A-D]?)\b", 
             0.75  # Initial confidence score without proximity check
+        ),
+        Pattern(
+            "UK NINO Compact",
+            r"\b(?!BG|GB|KN|NK|NT|TN|ZZ)([A-CEGHJ-PR-TW-Z]{2})(\d{6})([A-D]?)\b",
+            0.75
         )
     ]
-    
+
     # Context keywords related to NINO
     CONTEXT = [
         "national insurance", "NINO", "insurance number", "NI number", "N.I. number", "NI No"
