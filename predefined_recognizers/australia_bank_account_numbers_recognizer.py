@@ -1,6 +1,7 @@
 from typing import Optional, List, Set, Tuple
 from presidio_analyzer import Pattern, PatternRecognizer, RecognizerResult
 import re
+import csv
 
 class AustraliaBankAccountRecognizer(PatternRecognizer):
     """
@@ -13,7 +14,7 @@ class AustraliaBankAccountRecognizer(PatternRecognizer):
      4. Both account and BSB must be present in the text, otherwise no detection.
     """
 
-    # Known BSB numbers
+    # Default BSB numbers (fallback if CSV not available)
     KNOWN_BSB_NUMBERS: Set[str] = {
         "012-785", "012-911", "013-961", "016-936", "016-985", "032-139", "033-141", "035-825",
         "062-136", "062-707", "062-904", "064-159", "085-645", "087-600", "105-069", "105-083",
@@ -70,29 +71,54 @@ class AustraliaBankAccountRecognizer(PatternRecognizer):
         supported_language: str = "en",
         supported_entity: str = "AUSTRALIA_BANK_ACCOUNT",
         known_bsb_numbers: Optional[Set[str]] = None,
+        csv_file_path: Optional[str] = "usr/share/data/bsb_code.csv",  # Add CSV path parameter
         pair_window: int = DEFAULT_PAIR_WINDOW,
     ):
         patterns = patterns if patterns is not None else self.PATTERNS
-        
-        # Remove the context manipulation and pass it directly to parent
-        # The parent class will handle the context properly
+
+        # Load BSB numbers from CSV if path provided
+        if csv_file_path:
+            self.known_bsb_numbers = self._load_bsb_from_csv(csv_file_path)
+        else:
+            # Use provided set or fallback to default
+            self.known_bsb_numbers = known_bsb_numbers if known_bsb_numbers is not None else self.KNOWN_BSB_NUMBERS
+
         super().__init__(
             supported_entity=supported_entity,
             patterns=patterns,
             context=context,  # Pass context as-is to parent
             supported_language=supported_language,
         )
-        
+
         self.supported_entity = supported_entity
-        self.known_bsb_numbers = known_bsb_numbers if known_bsb_numbers is not None else self.KNOWN_BSB_NUMBERS
         self.pair_window = pair_window
-        
+
         # Use the context that was passed or default to CLASS CONTEXT
         effective_context = context if context is not None else self.CONTEXT
-        
+
         # lowercase keywords for robust detection - use these internally for your logic
         self.lower_context_set = set(kw.lower() for kw in effective_context)
         self.lower_negative_set = set(kw.lower() for kw in self.NEGATIVE_CONTEXT)
+
+    def _load_bsb_from_csv(self, csv_file_path: str) -> Set[str]:
+        """Load BSB numbers from the first column of CSV file"""
+        bsb_numbers = set()
+        try:
+            with open(csv_file_path, 'r', encoding='utf-8') as file:
+                reader = csv.reader(file)
+                for row in reader:
+                    if row and len(row) > 0:
+                        bsb = row[0].strip().strip('"')
+                        bsb_numbers.add(bsb)
+            print(f"Loaded {len(bsb_numbers)} BSB numbers from {csv_file_path}")
+        except FileNotFoundError:
+            print(f"CSV file {csv_file_path} not found, using default BSB numbers")
+            return self.KNOWN_BSB_NUMBERS
+        except Exception as e:
+            print(f"Error loading BSB from CSV {csv_file_path}: {e}, using default BSB numbers")
+            return self.KNOWN_BSB_NUMBERS
+        
+        return bsb_numbers
 
     def _normalize_bsb(self, raw_bsb: str) -> Optional[str]:
         """Normalize forms like '123456', '123 456', '123-456' -> '123-456'"""

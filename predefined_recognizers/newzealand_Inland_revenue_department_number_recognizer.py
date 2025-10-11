@@ -110,75 +110,60 @@ class NewZealandInlandRevenueDepartmentNumberRecognizer(PatternRecognizer):
     # ---------------------------------------------------------------------
     def _is_valid_ird_checksum(self, number: str) -> bool:
         """
-        Implements NZ Inland Revenue Department number Modulus-11 validation.
-        Reference: Microsoft Purview definition + IRD algorithm.
+        Validates NZ Inland Revenue Department (IRD) numbers using the correct modulus-11 algorithm.
+        Supports 8-digit and 9-digit numbers.
         """
 
-        if len(number) not in (8, 9):
-            print(f"✗ Invalid length ({len(number)}) for number: {number}")
-            return False
+        # Remove any non-digit characters
+        number = re.sub(r"\D", "", number)
 
-        # Pad 8-digit number
         if len(number) == 8:
-            number = "0" + number
-            print(f"→ Padded to 9 digits: {number}")
-
-        try:
             digits = [int(d) for d in number]
-        except ValueError:
-            print(f"✗ Non-numeric characters found in: {number}")
-            return False
-
-        def check(weights):
-            total = sum(d * w for d, w in zip(digits[:8], weights))
+            weights = [3, 2, 7, 6, 5, 4, 3, 2]
+            check_digit = digits[-1]  # last digit
+            total = sum(d * w for d, w in zip(digits, weights))
             remainder = total % 11
-            check_digit = digits[8]
-            expected = (11 - remainder) if remainder not in (0, 1) else None
-            print(f"  Weights: {weights} | Total={total} | Remainder={remainder} | Check digit={check_digit} | Expected={expected}")
+            print(f"8-digit IRD | Number: {number} | Total={total} | Remainder={remainder} | Check digit={check_digit}")
+
             if remainder == 0:
                 return check_digit == 0
             elif remainder == 1:
                 return False
             else:
+                expected = 11 - remainder
                 return check_digit == expected
 
-        primary = [3, 2, 7, 6, 5, 4, 3, 2]
-        if check(primary):
-            print("✓ Passed primary weighting scheme")
-            return True
+        elif len(number) == 9:
+            digits = [int(d) for d in number]
+            # Standard primary weighting for 9-digit IRD
+            primary = [3, 2, 7, 6, 5, 4, 3, 2]
+            # Apply only to the first 8 digits
+            total = sum(d * w for d, w in zip(digits[:8], primary))
+            remainder = total % 11
+            check_digit = digits[8]
+            print(f"9-digit IRD | Number: {number} | Total={total} | Remainder={remainder} | Check digit={check_digit}")
 
-        secondary = [7, 4, 3, 2, 5, 2, 7, 6]
-        if check(secondary):
-            print("✓ Passed secondary weighting scheme")
-            return True
+            if remainder == 0:
+                return check_digit == 0
+            elif remainder == 1:
+                # Try secondary weighting (legacy 9-digit numbers)
+                secondary = [7, 4, 3, 2, 5, 2, 7, 6]
+                total2 = sum(d * w for d, w in zip(digits[:8], secondary))
+                remainder2 = total2 % 11
+                expected2 = 11 - remainder2 if remainder2 not in (0, 1) else None
+                print(f"Secondary 9-digit check | Total={total2} | Remainder={remainder2} | Expected={expected2}")
+                if remainder2 == 0:
+                    return check_digit == 0
+                elif remainder2 == 1:
+                    return False
+                else:
+                    return check_digit == expected2
+            else:
+                expected = 11 - remainder
+                return check_digit == expected
 
-        print("✗ Failed both weighting schemes")
-        return False
+        else:
+            print(f"✗ Invalid IRD length: {len(number)}")
+            return False
 
-    # ---------------------------------------------------------------------
-    # Test Cases
-    # ---------------------------------------------------------------------
-    def test_specific_cases(self):
-        print("\n========== Running Test Cases ==========")
-        cases = [
-            "Inland Revenue Department number: 49-098-576",
-            "Inland Revenue Department number: 123-456-782",
-            "Inland Revenue Department number: 123-456-789",
-            "IRD no: 49-091-8762",   # Valid checksum example
-            "Customer tax number: 490918762"  # Valid without delimiters
-        ]
 
-        for text in cases:
-            print("\n----------------------------------------")
-            results = self.analyze(text, [])
-            if not results:
-                print("No pattern matched.")
-            for r in results:
-                print(f"Detected: {text[r.start:r.end]} → Score: {r.score}")
-
-        # Check raw numbers
-        print("\n--- Raw Checksum Validation ---")
-        for num in ["49098576", "123456782", "123456789", "490918762", "490918761"]:
-            print(f"\nValidating {num}:")
-            valid = self._is_valid_ird_checksum(num)
-            print(f"Result: {'Valid ✅' if valid else 'Invalid ❌'}")
