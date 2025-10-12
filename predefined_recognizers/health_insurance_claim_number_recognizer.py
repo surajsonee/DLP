@@ -1,55 +1,48 @@
+import re
 from typing import Optional, List, Tuple
-from presidio_analyzer import Pattern, PatternRecognizer
+from presidio_analyzer import Pattern, PatternRecognizer, RecognizerResult
+
 
 class HICNRecognizer(PatternRecognizer):
     """
-    Recognizes Health Insurance Claim Numbers (HICNs).
+    Recognizes and validates both Health Insurance Claim Numbers (HICNs)
+    and Medicare Beneficiary Identifiers (MBIs).
 
-    HICNs are alphanumeric codes typically formatted as:
-    - A letter followed by 6 or 9 digits
-    - 9 digits followed by 1 or 2 letters
-    - 9 digits followed by a letter and another digit
-
-    :param patterns: List of patterns to be used by this recognizer
-    :param context: List of context words to increase confidence in detection
-    :param supported_language: Language this recognizer supports
-    :param supported_entity: The entity this recognizer can detect
-    :param replacement_pairs: List of tuples with potential replacement values
-    for different strings to be used during pattern matching.
+    Scoring rules:
+        1. Keywords + incorrect ID → score < 0.7
+        2. No keywords + correct ID → score > 0.7
+        3. Keywords + correct ID → score > 0.8 or 1.0
     """
 
+    # -------------------------------
+    # Regex Patterns
+    # -------------------------------
     PATTERNS = [
+        # HICN legacy patterns: allows optional hyphens/spaces
         Pattern(
-            "HICN (High)",
-            r"\b[A-Z][0-9]{6}\b|\b[0-9]{9}[A-Z]{1,2}\b|\b[0-9]{9}[A-Z][0-9]\b",
-            0.85,
+            "HICN (Legacy)",
+            r"\b\d{3}[- ]?\d{2}[- ]?\d{4}[A-Z0-9]{1,2}\b",
+            0.5,
         ),
-        # New patterns based on the provided regex expressions
+        # MBI modern pattern (allows optional hyphens/spaces)
         Pattern(
-            "HICN (Pattern 1)",
-            r"\b[A-Z]{0,3}[0-9]{9}[0-9A-Z]{1,3}\b",  # Alphanumeric string, no delimiters
-            1.0,
-        ),
-        Pattern(
-            "HICN (Pattern 2)",
-            r"\b[A-Z]{0,3}[0-9]{3} [0-9]{6}[0-9A-Z]{1,3}\b",  # Alphanumeric string with space delimiter
-            1.0,
-        ),
-        Pattern(
-            "HICN (Pattern 3)",
-            r"\b[A-Z]{0,3}-[0-9]{3} [0-9]{2}-[0-9]{4}-[0-9A-Z]{1,3}\b",  # Alphanumeric string with space and hyphen delimiters
-            1.0,
-        ),
-        Pattern(
-            "HICN (Pattern 4)",
-            r"\b[A-Z]{0,3}-[0-9]{3}-[0-9]{2}-[0-9]{4}-[0-9A-Z]{1,3}\b",  # Alphanumeric string with hyphen delimiters
-            1.0,
+            "MBI (Modern)",
+            r"\b[1-9][A-CE-HJ-NP-RT-WY][0-9][A-CE-HJ-NP-RT-WY]{2}[0-9][A-CE-HJ-NP-RT-WY]{2}[0-9]{2}\b"
+            r"|\b[1-9][A-CE-HJ-NP-RT-WY][0-9][- ]?[A-CE-HJ-NP-RT-WY]{2}[- ]?[0-9][- ]?[A-CE-HJ-NP-RT-WY]{2}[- ]?[0-9]{2}\b",
+            0.5,
         ),
     ]
 
+    # Contextual keywords that increase confidence
     CONTEXT = [
+        "medicare",
+        "medicaid",
         "health insurance claim number",
         "hicn",
+        "mbi",
+        "cms",
+        "medicare beneficiary",
+        "social security",
     ]
 
     def __init__(
@@ -68,3 +61,94 @@ class HICNRecognizer(PatternRecognizer):
             context=context,
             supported_language=supported_language,
         )
+
+    # -------------------------------
+    # Validation Functions
+    # -------------------------------
+    def _is_valid_hicn(self, hicn: str) -> bool:
+        """Check structural and basic integrity for legacy HICNs."""
+        hicn = hicn.replace("-", "").replace(" ", "").upper()
+        if not re.fullmatch(r"\d{9}[A-Z0-9]{1,2}", hicn):
+            return False
+
+        ssn = hicn[:9]
+        # SSN validity checks
+        if ssn.startswith(("000", "666")) or ssn[0] == "9":
+            return False
+        if ssn[3:5] == "00" or ssn[5:] == "0000":
+            return False
+        return True
+
+    def _is_valid_mbi(self, mbi: str) -> bool:
+        """Validate MBI format per CMS rules."""
+        mbi = mbi.replace("-", "").replace(" ", "").upper()
+        if len(mbi) != 11:
+            return False
+
+        if any(ch in "IOSLBZ" for ch in mbi):
+            return False
+
+        pattern = re.compile(
+            r"^[1-9][A-CE-HJ-NP-RT-WY][0-9][A-CE-HJ-NP-RT-WY]{2}"
+            r"[0-9][A-CE-HJ-NP-RT-WY]{2}[0-9]{2}$"
+        )
+        if not pattern.match(mbi):
+            return False
+
+        # Basic integrity checksum: numeric sum mod 10 ≠ 0
+        digits = [int(d) for d in mbi if d.isdigit()]
+        if not digits or sum(digits) % 10 == 0:
+            return False
+
+        return True
+
+    # -------------------------------
+    # Scoring Logic
+    # -------------------------------
+    def _compute_score(self, has_context: bool, valid: bool) -> float:
+        """
+        Apply custom scoring rules:
+          1. keywords + incorrect → <0.7
+          2. no keywords + correct → >0.7
+          3. keywords + correct → >0.8 or 1.0
+        """
+        if has_context and not valid:
+            return 0.5  # Case 1
+        elif not has_context and valid:
+            return 0.8  # Case 2
+        elif has_context and valid:
+            return 1.0  # Case 3
+        else:
+            return 0.4  # generic fallback
+
+    # -------------------------------
+    # Override analyze() for validation + scoring
+    # -------------------------------
+    def analyze(
+        self,
+        text: str,
+        entities: Optional[List[str]] = None,
+        nlp_artifacts=None,
+    ) -> List[RecognizerResult]:
+        base_results = super().analyze(text, entities, nlp_artifacts)
+        validated_results = []
+
+        for result in base_results:
+            value = text[result.start:result.end].strip()
+            norm_val = value.replace("-", "").replace(" ", "").upper()
+
+            # Determine type (HICN vs MBI)
+            if re.fullmatch(r"\d{9}[A-Z0-9]{1,2}", norm_val):
+                valid = self._is_valid_hicn(value)
+            else:
+                valid = self._is_valid_mbi(value)
+
+            # Determine context presence
+            context_found = self._has_context(text, result)
+
+            # Compute final confidence score
+            result.score = self._compute_score(context_found, valid)
+            validated_results.append(result)
+
+        return validated_results
+
