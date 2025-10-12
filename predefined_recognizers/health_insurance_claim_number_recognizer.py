@@ -9,22 +9,22 @@ class HICNRecognizer(PatternRecognizer):
     and Medicare Beneficiary Identifiers (MBIs).
 
     Scoring rules:
-        1. Keywords + incorrect ID → score < 0.7
-        2. No keywords + correct ID → score > 0.7
-        3. Keywords + correct ID → score > 0.8 or 1.0
+        1. keywords + incorrect ID → score < 0.7
+        2. no keywords + correct ID → score > 0.7
+        3. keywords + correct ID → score > 0.8 or 1.0
     """
 
     # -------------------------------
     # Regex Patterns
     # -------------------------------
     PATTERNS = [
-        # HICN legacy patterns: allows optional hyphens/spaces
+        # HICN legacy patterns (accepts hyphens/spaces)
         Pattern(
             "HICN (Legacy)",
             r"\b\d{3}[- ]?\d{2}[- ]?\d{4}[A-Z0-9]{1,2}\b",
             0.5,
         ),
-        # MBI modern pattern (allows optional hyphens/spaces)
+        # MBI modern patterns (accepts hyphens/spaces)
         Pattern(
             "MBI (Modern)",
             r"\b[1-9][A-CE-HJ-NP-RT-WY][0-9][A-CE-HJ-NP-RT-WY]{2}[0-9][A-CE-HJ-NP-RT-WY]{2}[0-9]{2}\b"
@@ -33,7 +33,7 @@ class HICNRecognizer(PatternRecognizer):
         ),
     ]
 
-    # Contextual keywords that increase confidence
+    # Contextual keywords
     CONTEXT = [
         "medicare",
         "medicaid",
@@ -61,6 +61,24 @@ class HICNRecognizer(PatternRecognizer):
             context=context,
             supported_language=supported_language,
         )
+
+    # -------------------------------
+    # Add safe context checker
+    # -------------------------------
+    def _has_context(self, text: str, result: RecognizerResult) -> bool:
+        """
+        Detect whether any of the recognizer's context keywords appear
+        within 100 characters before or after the match.
+        """
+        window = 100
+        start = max(0, result.start - window)
+        end = min(len(text), result.end + window)
+        segment = text[start:end].lower()
+
+        for kw in self.CONTEXT:
+            if kw.lower() in segment:
+                return True
+        return False
 
     # -------------------------------
     # Validation Functions
@@ -95,7 +113,7 @@ class HICNRecognizer(PatternRecognizer):
         if not pattern.match(mbi):
             return False
 
-        # Basic integrity checksum: numeric sum mod 10 ≠ 0
+        # Basic checksum-like integrity check
         digits = [int(d) for d in mbi if d.isdigit()]
         if not digits or sum(digits) % 10 == 0:
             return False
@@ -106,12 +124,7 @@ class HICNRecognizer(PatternRecognizer):
     # Scoring Logic
     # -------------------------------
     def _compute_score(self, has_context: bool, valid: bool) -> float:
-        """
-        Apply custom scoring rules:
-          1. keywords + incorrect → <0.7
-          2. no keywords + correct → >0.7
-          3. keywords + correct → >0.8 or 1.0
-        """
+        """Apply custom scoring rules."""
         if has_context and not valid:
             return 0.5  # Case 1
         elif not has_context and valid:
@@ -119,10 +132,10 @@ class HICNRecognizer(PatternRecognizer):
         elif has_context and valid:
             return 1.0  # Case 3
         else:
-            return 0.4  # generic fallback
+            return 0.4  # fallback
 
     # -------------------------------
-    # Override analyze() for validation + scoring
+    # Override analyze()
     # -------------------------------
     def analyze(
         self,
@@ -143,10 +156,10 @@ class HICNRecognizer(PatternRecognizer):
             else:
                 valid = self._is_valid_mbi(value)
 
-            # Determine context presence
+            # Safe context detection
             context_found = self._has_context(text, result)
 
-            # Compute final confidence score
+            # Compute score
             result.score = self._compute_score(context_found, valid)
             validated_results.append(result)
 
