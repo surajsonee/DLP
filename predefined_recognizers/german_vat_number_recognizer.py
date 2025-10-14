@@ -5,29 +5,23 @@ from typing import List, Optional
 
 class GermanVATRecognizer(PatternRecognizer):
     """
-    Recognizer to detect and validate German VAT numbers (USt-IdNr):
-      – Format: 'DE' + 9 digits
-      – Checksum algorithm as per EU specification
-      – Context enforcement on terms like 'VAT', 'Mehrwertsteuer', etc.
+    Recognizer to detect and validate German VAT numbers (USt-IdNr).
     """
 
-    # Only allow the 'DE' + 9 digits format
     PATTERNS = [
         Pattern(
             name="German VAT (DE + 9 digits)",
             regex=r"\bDE[0-9]{9}\b",
-            score=1.0,
+            score=0.8,  # Slightly lower base
         ),
     ]
 
-    # VAT-related context keywords
     CONTEXT = [
-        "vat number", "vat no", "vat#", "mwst", "mehrwertsteuer",
-        "mehrwertsteuer identifikationsnummer",
+        "vat", "vat number", "vat no", "mwst", "mehrwertsteuer",
+        "mehrwertsteuer identifikationsnummer", "ust-id", "ustid",
     ]
 
-    # Minimum score required to surface a finding
-    MIN_SCORE = 0.85
+    MIN_SCORE = 0.75  # Allow slightly lower threshold
 
     def __init__(
         self,
@@ -43,79 +37,57 @@ class GermanVATRecognizer(PatternRecognizer):
             supported_language=supported_language,
         )
 
-    def analyze(
-        self,
-        text: str,
-        entities: List[str],
-        nlp_artifacts=None
-    ) -> List[RecognizerResult]:
-        # 1. Base pattern match
+    def analyze(self, text: str, entities: List[str], nlp_artifacts=None) -> List[RecognizerResult]:
         results = super().analyze(text, entities, nlp_artifacts)
-
         filtered: List[RecognizerResult] = []
+
         for res in results:
-            span = text[res.start : res.end]  # e.g. "DE123456789"
-
-            # 2. Check context and checksum
+            candidate = text[res.start : res.end]
             has_ctx = self._has_context(text, res.start, res.end)
-            valid_ck = self._validate_checksum(span)
+            valid_ck = self._validate_checksum(candidate)
 
-            if has_ctx and valid_ck:
-                # boost to maximum
+            # Adjust score intelligently
+            if valid_ck and has_ctx:
                 res.score = 1.0
+            elif valid_ck and not has_ctx:
+                res.score = 0.9  # Allow valid checksum alone to pass
+            elif not valid_ck and has_ctx:
+                res.score = 0.6
             else:
-                # penalize stray or invalid matches
-                res.score *= 0.5
+                res.score = 0.4
 
-            # 3. Only keep high-confidence hits
             if res.score >= self.MIN_SCORE:
                 filtered.append(res)
 
         return filtered
 
     def _has_context(self, text: str, start: int, end: int) -> bool:
-        """
-        Look in a 300-char window around the candidate for any VAT context keyword.
-        """
-        window = text[max(0, start - 300) : end + 300].lower()
+        window = text[max(0, start - 200) : end + 200].lower()
         return any(ctx in window for ctx in self.CONTEXT)
 
     def _validate_checksum(self, vat: str) -> bool:
         """
-        German VAT checksum (USt-IdNr) validation:
-
-          1. Strip 'DE' prefix, work on the 9 digits.
-          2. Initialize product = 10.
-          3. For digits 1..8:
-               sum = (digit + product) % 10
-               if sum == 0: sum = 10
-               product = (2 * sum) % 11
-          4. check_digit = 11 - product
-             if check_digit == 10: return False
-             if check_digit == 11: check_digit = 0
-          5. Return (check_digit == digit9)
-
-        Source: vat-validator library implementation :contentReference[oaicite:0]{index=0}
+        Correct German VAT checksum (USt-IdNr) validation.
         """
-        # Ensure format: DE + 9 digits
         match = re.fullmatch(r"DE(\d{9})", vat)
         if not match:
             return False
 
         digits = list(map(int, match.group(1)))
-        # First 8 digits → for the running product
-        p = reduce(
-            lambda product, d: (2 * (10 if (d + product) % 10 == 0 else (d + product) % 10)) % 11,
-            digits[:-1],
-            10,
-        )
+        # Running product starting at 10
+        product = 10
+        for d in digits[:-1]:  # first 8 digits
+            s = (d + product) % 10
+            if s == 0:
+                s = 10
+            product = (2 * s) % 11
 
-        # Compute expected check digit
-        r = 11 - p
-        if r == 10:
-            return False
-        if r == 11:
-            r = 0
+        check = 11 - product
+        # Map special cases to 0, not to invalid
+        if check == 10:
+            check = 0
+        elif check == 11:
+            check = 0
 
-        # Compare to the 9th digit
-        return r == digits[-1]
+        return check == digits[-1]
+
