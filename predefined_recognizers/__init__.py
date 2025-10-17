@@ -142,6 +142,7 @@ from .hipaa_hitech_medium_threshold_recognizer import HIPAAHITECHMEDIUMRecognize
 from .dob_text_recognizer import DOBRecognizer
 from .npi_recognizer import NPIRecognizer
 from .hipaareg_recognizer import HipaaRegRecognizer
+from .us_CORPFIN_recognizer import USCorporateFinancialRecognizer
 
 NLP_RECOGNIZERS = {
     "spacy": SpacyRecognizer,
@@ -291,5 +292,6 @@ __all__ = [
     "DOBRecognizer",
     "NPIRecognizer",
     "HipaaRegRecognizer",
+    "USCorporateFinancialRecognizer",
     
 ]

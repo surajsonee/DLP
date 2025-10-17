@@ -150,6 +150,7 @@ from presidio_analyzer.predefined_recognizers import (
     DOBRecognizer,
     NPIRecognizer,
     HipaaRegRecognizer,
+    USCorporateFinancialRecognizer,
 )
 
 logger = logging.getLogger("presidio-analyzer")
@@ -314,6 +315,7 @@ class RecognizerRegistry:
                 DOBRecognizer,
                 NPIRecognizer,
                 HipaaRegRecognizer,
+                USCorporateFinancialRecognizer,
                 
             ],
             "es": [EsNifRecognizer],

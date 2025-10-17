@@ -8,16 +8,16 @@ logger = logging.getLogger("presidio-analyzer")
 class VisaCreditCardRecognizer(PatternRecognizer):
     logger.info("Initializing Visa Credit Card Recognizer...")
 
-    # Define pattern for Visa credit card
+    # Updated pattern for Visa: supports 13–19 digits, spaces, and hyphens
     PATTERNS = [
         Pattern(
-            "Visa Credit Card - Pattern",
-            r"\b4[0-9]{12}(?:[0-9]{3})?\b",  # Visa credit card pattern
-            0.5  # Initial confidence score for the pattern match
+            "Visa Credit Card - Enhanced Pattern",
+            # 4 + 12-18 digits, allowing separators (space or hyphen)
+            r"\b4(?:[\s-]?[0-9]){12,18}\b",
+            0.5
         )
     ]
 
-    # Context keywords for Visa credit card
     CONTEXT = [
         "visa", "visa card", "credit card", "visa credit card", "payment card", "card number"
     ]
@@ -26,7 +26,7 @@ class VisaCreditCardRecognizer(PatternRecognizer):
         self,
         patterns: Optional[List[Pattern]] = None,
         context: Optional[List[str]] = None,
-        supported_language: str = "en",  # Supports English
+        supported_language: str = "en",
         supported_entity: str = "VISA_CREDIT_CARD",
     ):
         patterns = patterns if patterns else self.PATTERNS
@@ -48,27 +48,31 @@ class VisaCreditCardRecognizer(PatternRecognizer):
             card_number = text[result.start:result.end]
             logger.debug(f"Detected Visa Card Number: {card_number}, Confidence: {result.score}")
 
-            # Remove spaces or hyphens for checksum validation
+            # Clean up card number by removing spaces and hyphens
             cleaned_card_number = re.sub(r"[\s-]", "", card_number)
 
-            # Perform Luhn checksum validation
+            # Only proceed if it’s 13–19 digits
+            if not (13 <= len(cleaned_card_number) <= 19 and cleaned_card_number.isdigit()):
+                logger.warning(f"Invalid length for Visa card: {card_number}")
+                result.score = 0.0
+                continue
+
+            # Validate checksum
             if self._is_valid_checksum(cleaned_card_number):
                 logger.info(f"Checksum valid for Visa card: {card_number}")
-                result.score = 0.7  # Medium confidence if checksum passes
-                # Check for context keywords
+                result.score = 0.7
+                # Boost confidence if Visa context is nearby
                 if any(keyword in text.lower() for keyword in self.CONTEXT):
                     logger.info(f"Context keywords found near Visa card: {card_number}, setting high confidence.")
-                    result.score = 1.0  # High confidence if context keywords are present
+                    result.score = 1.0
             else:
                 logger.warning(f"Invalid checksum for Visa card: {card_number}")
-                result.score = 0.0  # Invalid Visa card
-            
+                result.score = 0.0
+
         return results
 
     def _is_valid_checksum(self, card_number: str) -> bool:
-        """
-        Validate the checksum using Luhn's algorithm (Modulus 10).
-        """
+        """Validate number using Luhn algorithm."""
         sum_ = 0
         alternate = False
 
@@ -82,3 +86,4 @@ class VisaCreditCardRecognizer(PatternRecognizer):
             alternate = not alternate
 
         return sum_ % 10 == 0
+

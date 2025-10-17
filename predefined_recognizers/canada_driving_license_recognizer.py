@@ -1,192 +1,143 @@
-from typing import Optional, List
-from presidio_analyzer import Pattern, PatternRecognizer, RecognizerResult
 import re
+import logging
+from typing import Optional, List
+from presidio_analyzer import Pattern, PatternRecognizer
+
+# Enable detailed debug logs
+logger = logging.getLogger("presidio-analyzer")
+logger.setLevel(logging.DEBUG)
 
 
 class CanadaDriversLicenceRecognizer(PatternRecognizer):
     """
-    Recognizes Canadian Driver’s Licence Numbers for all provinces.
-    Enhanced to:
-      - Prevent matches with trailing special characters like '&' or '_'
-      - Avoid IBAN/other number overlaps
-      - Use safer and stricter regex patterns
+    Recognizer for Canadian Driver's Licence numbers across all provinces and territories.
+    Dynamically scores matches based on validation checks.
     """
 
+    # ---------------------------
+    # Regex Patterns (by Province)
+    # ---------------------------
     PATTERNS = [
-        # --- Generic weak patterns ---
-        Pattern(
-            "Province name followed by 8 digits (weak)",
-            r"\b([A-Za-z]+)\s+([0-9]{8})(?![A-Za-z0-9])",
-            0.4,
-        ),
-        Pattern(
-            "8 digits followed by 'license number' (moderate)",
-            r"\b([0-9]{8})\s+(license number)\b",
-            0.85,
-        ),
-        Pattern(
-            "8 digits + province abbreviation + 'license number' (strong)",
-            r"\b([0-9]{8})\s+(sk|ab|bc|mb|nb|nl|ns|nt|nu|on|pe|qc|yt)\s+(license number)\b",
-            1.0,
-        ),
-        Pattern(
-            "8 digits + full province name + 'license number' (strong)",
-            r"\b([0-9]{8})\s+(Saskatchewan|Alberta|British Columbia|Manitoba|Newfoundland(?: and Labrador)?|Nova Scotia|Ontario|Quebec|Yukon)\s+(license number)\b",
-            1.0,
-        ),
-        Pattern(
-            "Contains 'license' and province with 8-digit number (strong)",
-            r"(?=.*\b(license|license number)\b)(?=.*\b(Saskatchewan|Alberta|British Columbia|Manitoba|Newfoundland(?: and Labrador)?|Nova Scotia|Ontario|Quebec|Yukon|Northwest Territories|Nunavut|Prince Edward Island|New Brunswick|SK|AB|BC|MB|NL|NS|NT|NU|ON|PE|QC|YT)\b)(?=.*\b\d{8}\b)",
-            1.0,
-        ),
-        # 8 digits only (generic weak pattern)
-        Pattern(
-            "8 digits only (weak)",
-            r"(?<![A-Z]{2}\d{2}[A-Z]{4})\b(\d{8})(?![A-Za-z0-9])",
-            0.1,
-        ),
+        # Alberta: 6 digits + hyphen + 3 digits, or 5–9 digits
+        Pattern("Alberta DL", r"\b\d{6}-\d{3}\b|\b\d{5,9}\b", 0.8),
 
-        # --- Province-specific patterns ---
-        # Quebec (1 letter + 12 digits)
-        Pattern(
-            "Quebec Licence Number",
-            r"\b([A-Z]\d{12})(?![A-Za-z0-9&])",
-            0.9,
-        ),
-        Pattern(
-            "Quebec Licence with Province",
-            r"\b((Quebec|QC)\s*[A-Z]\d{12}|[A-Z]\d{12}\s*(Quebec|QC))(?![A-Za-z0-9&])",
-            0.95,
-        ),
+        # British Columbia: 7 digits
+        Pattern("British Columbia DL", r"\b\d{7}\b", 0.75),
 
-        # PEI: 5–6 digits
-        Pattern(
-            "PEI Licence (weak)",
-            r"\b(\d{5,6})(?![A-Za-z0-9])",
-            0.25,
-        ),
-        Pattern(
-            "PEI Licence with Province",
-            r"\b((Prince\sEdward\sIsland|PE|PEI)\s*\d{5,6}|\d{5,6}\s*(Prince\sEdward\sIsland|PE|PEI))(?![A-Za-z0-9])",
-            0.9,
-        ),
+        # Manitoba: 2 letters - 2 letters - 2 letters - 1 letter + 3 digits + 2 letters (complex)
+        Pattern("Manitoba DL", r"\b[A-Z]{2}-?[A-Z]{2}-?[A-Z]{2}-?[A-Z]\d{3}[A-Z]{2}\b", 0.85),
 
-        # Ontario (1 letter + 14 digits, often hyphenated)
-        Pattern(
-            "Ontario Licence",
-            r"\b(?:Ontario|ON)?\s*(?:license number|license|DL|Driving license number)?\s*([A-Z]\d{4}-?\d{5}-?\d{5})(?![A-Za-z0-9])",
-            0.95,
-        ),
+        # New Brunswick: 5–7 digits
+        Pattern("New Brunswick DL", r"\b\d{5,7}\b", 0.75),
 
-        # Nova Scotia (14 digits)
-        Pattern(
-            "Nova Scotia Licence",
-            r"\b(?:Nova\sScotia|NS)\s*(?:license\snumber|DL|license|Driving\slicense\snumber)?\s*(\d{14})(?![A-Za-z0-9])",
-            0.95,
-        ),
+        # Newfoundland and Labrador: 1 letter + 9 digits
+        Pattern("Newfoundland and Labrador DL", r"\b[A-Z]\d{9}\b", 0.9),
 
-        # Newfoundland and Labrador (1 letter + 12 digits)
-        Pattern(
-            "Newfoundland and Labrador Licence",
-            r"\b(?:Newfoundland(?: and Labrador)?|NL)\s*(?:license|DL|Driving\slicense\snumber)?\s*([A-Z]\d{12})(?![A-Za-z0-9])",
-            0.95,
-        ),
+        # Nova Scotia: 5 letters - optional hyphen - 9 digits (specific digit rules simplified)
+        Pattern("Nova Scotia DL", r"\b[A-Z]{5}-?\d{9}\b", 0.85),
 
-        # New Brunswick (1 letter + 14 digits)
-        Pattern(
-            "New Brunswick Licence",
-            r"\b(?:New\sBrunswick|NB)\s*(?:license\snumber|DL|license|Driving\slicense\snumber)?\s*([A-Z]\d{14})(?![A-Za-z0-9])",
-            0.95,
-        ),
+        # Ontario: 1 letter + 4 digits + optional hyphen + 5 digits + province-specific suffix
+        Pattern("Ontario DL", r"\b[A-Z]\d{4}-?\d{5}\d[0156]\d[0-3]\d\b", 0.9),
 
-        # Manitoba (15 digits)
-        Pattern(
-            "Manitoba Licence",
-            r"\b(?:Manitoba|MB)\s*(?:license number|DL|license|Driving\slicense\snumber)?\s*(\d{15})(?![A-Za-z0-9])",
-            0.95,
-        ),
+        # Prince Edward Island: 5–6 digits
+        Pattern("Prince Edward Island DL", r"\b\d{5,6}\b", 0.7),
 
-        # British Columbia (1 letter + 7 digits)
-        Pattern(
-            "British Columbia Licence",
-            r"\b(?:British\sColumbia|BC)\s*(?:license\snumber|DL|license|Driving\slicense\snumber)?\s*([A-Z]\d{7})(?![A-Za-z0-9])",
-            0.95,
-        ),
+        # Quebec: 1 letter + 12 digits
+        Pattern("Quebec DL", r"\b[A-Z]\d{12}\b", 0.9),
 
-        # Alberta (7–9 digits, sometimes with hyphen)
-        Pattern(
-            "Alberta Licence",
-            r"\b(?:Alberta|AB)\s*(?:license number|DL|license|Driving license number)?\s*(\d{5,9}|\d{6}-\d{3})(?![A-Za-z0-9])",
-            0.95,
-        ),
+        # Saskatchewan: 8 digits
+        Pattern("Saskatchewan DL", r"\b\d{8}\b", 0.8),
 
-        # Saskatchewan (9 digits)
-        Pattern(
-            "Saskatchewan Licence",
-            r"\b(?:Saskatchewan|SK)\s*(?:license number|DL|license|Driving license number)?\s*(\d{9})(?![A-Za-z0-9])",
-            0.95,
-        ),
-
-        # Yukon (6 digits)
-        Pattern(
-            "Yukon Licence",
-            r"\b(?:Yukon|YT)\s*(?:license number|DL|license|Driving license number)?\s*(\d{6})(?![A-Za-z0-9])",
-            0.9,
-        ),
-
-        # NWT/Nunavut (6 digits)
-        Pattern(
-            "Northwest Territories / Nunavut Licence",
-            r"\b(?:Northwest\sTerritories|NWT|Nunavut|NU)\s*(?:license number|DL|license|Driving license number)?\s*(\d{6})(?![A-Za-z0-9])",
-            0.9,
-        ),
+        # Northwest Territories, Yukon, Nunavut: 6–9 alphanumeric, must contain at least 1 digit
+        Pattern("Territories DL", r"\b(?=.*\d)[A-Z0-9]{6,9}\b", 0.65),
     ]
 
     CONTEXT = [
-        "driver",
-        "license",
-        "permit",
-        "identification",
-        "province",
-        "canadian",
-        "driving license number",
-        "DL",
-        "driver's license",
-        "driving permit",
-        "provincial",
-        "license number",
-        "DLN",
+        "driver licence",
+        "drivers license",
+        "driving licence",
+        "dl number",
+        "canada licence",
+        "provincial licence",
+        "issued by",
+        "transport",
+        "vehicle licence",
+        "dl no",
     ]
 
+    # ---------------------------------------
+    # Init with defaults and optional override
+    # ---------------------------------------
     def __init__(
         self,
         patterns: Optional[List[Pattern]] = None,
         context: Optional[List[str]] = None,
-        supported_language: str = "en",
         supported_entity: str = "CANADA_DRIVERS_LICENCE",
+        supported_language: str = "en",
     ):
-        patterns = patterns if patterns else self.PATTERNS
-        context = context if context else self.CONTEXT
+        patterns = patterns or self.PATTERNS
+        context = context or self.CONTEXT
+
         super().__init__(
             supported_entity=supported_entity,
-            supported_language=supported_language,
             patterns=patterns,
             context=context,
+            supported_language=supported_language,
         )
 
-    def analyze(
-        self, text: str, entities: Optional[List[str]] = None, nlp_artifacts=None
-    ) -> List[RecognizerResult]:
-        """Exclude IBAN-like matches and filter clean results."""
-        results = super().analyze(text, entities, nlp_artifacts)
-        IBAN_REGEX = r"\b[A-Z]{2}\d{2}[A-Z0-9]{1,30}\b"
-        iban_spans = [(m.start(), m.end()) for m in re.finditer(IBAN_REGEX, text)]
+    # ------------------------------------------
+    # Validation and Scoring Logic per Match
+    # ------------------------------------------
+    def validate_result(self, pattern_text: str) -> bool:
+        """
+        Lightweight validation logic for each matched DL number.
+        Returns True if valid format, False otherwise.
+        """
+        clean_text = re.sub(r"[^A-Za-z0-9]", "", pattern_text)
+        logger.debug(f"[VALIDATE] Raw: '{pattern_text}' | Cleaned: '{clean_text}'")
 
-        filtered_results = []
-        for r in results:
-            if not any(start <= r.start and r.end <= end for start, end in iban_spans):
-                filtered_results.append(r)
-            else:
-                print(f"Excluded IBAN-like match: '{text[r.start:r.end]}'")
-        return filtered_results
+        if len(clean_text) < 5 or len(clean_text) > 15:
+            logger.debug(f"[INVALID] Length out of range ({len(clean_text)})")
+            return False
+
+        # Must have at least 5 characters and either digits or letters
+        if not re.search(r"[0-9]", clean_text):
+            logger.debug("[INVALID] Missing digits")
+            return False
+
+        # Province-specific lightweight validation rules
+        if re.match(r"^\d{6}\d{3}$", clean_text) or re.match(r"^\d{6}-\d{3}$", pattern_text):
+            logger.debug("[VALID] Alberta format")
+            return True
+        if re.match(r"^[A-Z]\d{12}$", clean_text):
+            logger.debug("[VALID] Quebec format")
+            return True
+        if re.match(r"^\d{8}$", clean_text):
+            logger.debug("[VALID] Saskatchewan format")
+            return True
+        if re.match(r"^\d{7}$", clean_text):
+            logger.debug("[VALID] BC or NB format")
+            return True
+        if re.match(r"^[A-Z]\d{9}$", clean_text):
+            logger.debug("[VALID] Newfoundland format")
+            return True
+
+        logger.debug("[UNCERTAIN] Could be generic Territories or unknown province")
+        return True  # still a possible match
+
+    def analyze(self, text, entities, nlp_artifacts=None):
+        """
+        Override to dynamically adjust score after validation.
+        """
+        results = super().analyze(text, entities, nlp_artifacts)
+        for result in results:
+            matched_text = text[result.start:result.end]
+            is_valid = self.validate_result(matched_text)
+            old_score = result.score
+            result.score = max(0.7, old_score) if is_valid else min(0.69, old_score - 0.1)
+            logger.debug(
+                f"[RESULT] '{matched_text}' | Valid={is_valid} | "
+                f"OldScore={old_score:.2f} → NewScore={result.score:.2f}"
+            )
+        return results
 
